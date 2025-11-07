@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MilletDB Console</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: #2d2d30;
+            padding: 10px 20px;
+            border-bottom: 1px solid #3e3e42;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .header h1 {
+            font-size: 16px;
+            font-weight: normal;
+            color: #cccccc;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 12px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #4ec9b0;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .console-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .output {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .output::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        .output::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+
+        .output::-webkit-scrollbar-thumb {
+            background: #3e3e42;
+            border-radius: 5px;
+        }
+
+        .output-line {
+            margin-bottom: 8px;
+        }
+
+        .prompt {
+            color: #4ec9b0;
+            font-weight: bold;
+        }
+
+        .command {
+            color: #dcdcaa;
+        }
+
+        .result {
+            color: #ce9178;
+            margin-left: 20px;
+        }
+
+        .result.success {
+            color: #4ec9b0;
+        }
+
+        .result.error {
+            color: #f48771;
+        }
+
+        .result.info {
+            color: #569cd6;
+        }
+
+        .welcome {
+            color: #608b4e;
+            margin-bottom: 15px;
+        }
+
+        .input-container {
+            background: #252526;
+            border-top: 1px solid #3e3e42;
+            padding: 15px 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .input-prompt {
+            color: #4ec9b0;
+            font-weight: bold;
+        }
+
+        #commandInput {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #dcdcaa;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+            outline: none;
+        }
+
+        #commandInput::placeholder {
+            color: #6a6a6a;
+        }
+
+        .help-text {
+            color: #6a6a6a;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+
+        .stats-inline {
+            display: inline-block;
+            margin-right: 15px;
+            color: #569cd6;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <h1>MilletDB Console</h1>
+            <div class="status">
+                <span class="status-dot"></span>
+                <span>localhost:8080</span>
+            </div>
+        </div>
+        <div style="font-size: 12px; color: #6a6a6a;">
+            Type 'help' for commands
+        </div>
+    </div>
+
+    <div class="console-container">
+        <div class="output" id="output">
+            <div class="welcome">
+Welcome to MilletDB Console
+Server version: 0.0.1-SNAPSHOT
+Type 'help' for a list of commands.
+            </div>
+        </div>
+
+        <div class="input-container">
+            <span class="input-prompt">milletdb></span>
+            <input type="text" id="commandInput" placeholder="Enter command (e.g., SET key value)" autofocus>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8081';
+        const output = document.getElementById('output');
+        const commandInput = document.getElementById('commandInput');
+        let commandHistory = [];
+        let historyIndex = -1;
+
+        // Add output line
+        function addOutput(text, className = '') {
+            const line = document.createElement('div');
+            line.className = 'output-line';
+            
+            if (className) {
+                const span = document.createElement('span');
+                span.className = `result ${className}`;
+                span.textContent = text;
+                line.appendChild(span);
+            } else {
+                line.innerHTML = text;
+            }
+            
+            output.appendChild(line);
+            output.scrollTop = output.scrollHeight;
+        }
+
+        // Show command prompt
+        function showPrompt(command) {
+            const line = document.createElement('div');
+            line.className = 'output-line';
+            line.innerHTML = `<span class="prompt">milletdb></span> <span class="command">${command}</span>`;
+            output.appendChild(line);
+            output.scrollTop = output.scrollHeight;
+        }
+
+        // Execute command
+        async function executeCommand(cmd) {
+            const trimmed = cmd.trim();
+            if (!trimmed) return;
+
+            showPrompt(trimmed);
+            commandHistory.unshift(trimmed);
+            historyIndex = -1;
+
+            const parts = trimmed.split(/\s+/);
+            const command = parts[0].toUpperCase();
+
+            try {
+                switch (command) {
+                    case 'HELP':
+                        showHelp();
+                        break;
+                    case 'CLEAR':
+                        output.innerHTML = '';
+                        break;
+                    case 'SET':
+                        await handleSet(parts);
+                        break;
+                    case 'GET':
+                        await handleGet(parts);
+                        break;
+                    case 'DEL':
+                    case 'DELETE':
+                        await handleDel(parts);
+                        break;
+                    case 'EXPIRE':
+                        await handleExpire(parts);
+                        break;
+                    case 'PING':
+                        await handlePing();
+                        break;
+                    case 'STATS':
+                        await handleStats();
+                        break;
+                    case 'HEALTH':
+                        await handleHealth();
+                        break;
+                    case 'EXIT':
+                    case 'QUIT':
+                        addOutput('Use Ctrl+W or close the browser tab to exit.', 'info');
+                        break;
+                    default:
+                        addOutput(`Unknown command: ${command}. Type 'help' for available commands.`, 'error');
+                }
+            } catch (error) {
+                addOutput(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        function showHelp() {
+            const help = `
+Available Commands:
+  SET key value          Store a key-value pair
+  GET key                Retrieve a value by key
+  DEL key                Delete a key
+  EXPIRE key ttl         Set TTL in milliseconds
+  PING                   Test server connection
+  STATS                  Show server statistics
+  HEALTH                 Check server health
+  CLEAR                  Clear console
+  HELP                   Show this help message
+
+Examples:
+  SET username "john_doe"
+  GET username
+  EXPIRE username 5000
+  DEL username
+`;
+            addOutput(help, 'info');
+        }
+
+        async function handleSet(parts) {
+            if (parts.length < 3) {
+                addOutput('Usage: SET key value', 'error');
+                return;
+            }
+            const key = parts[1];
+            const value = parts.slice(2).join(' ').replace(/^["']|["']$/g, '');
+
+            const res = await fetch(`${API_BASE}/api/set`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key, value })
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                addOutput('OK', 'success');
+            } else {
+                addOutput(data.message, 'error');
+            }
+        }
+
+        async function handleGet(parts) {
+            if (parts.length < 2) {
+                addOutput('Usage: GET key', 'error');
+                return;
+            }
+            const key = parts[1];
+
+            const res = await fetch(`${API_BASE}/api/get/${encodeURIComponent(key)}`);
+            const data = await res.json();
+
+            if (data.success) {
+                if (data.found) {
+                    addOutput(`"${data.value}"`, 'success');
+                } else {
+                    addOutput('(nil)', 'info');
+                }
+            } else {
+                addOutput(data.message, 'error');
+            }
+        }
+
+        async function handleDel(parts) {
+            if (parts.length < 2) {
+                addOutput('Usage: DEL key', 'error');
+                return;
+            }
+            const key = parts[1];
+
+            const res = await fetch(`${API_BASE}/api/del/${encodeURIComponent(key)}`, {
+                method: 'DELETE'
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                addOutput('OK', 'success');
+            } else {
+                addOutput(data.message, 'error');
+            }
+        }
+
+        async function handleExpire(parts) {
+            if (parts.length < 3) {
+                addOutput('Usage: EXPIRE key ttl_in_milliseconds', 'error');
+                return;
+            }
+            const key = parts[1];
+            const ttl = parseInt(parts[2]);
+
+            if (isNaN(ttl)) {
+                addOutput('TTL must be a number', 'error');
+                return;
+            }
+
+            const res = await fetch(`${API_BASE}/api/expire`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key, ttl })
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                addOutput('OK', 'success');
+            } else {
+                addOutput(data.message, 'error');
+            }
+        }
+
+        async function handlePing() {
+            const res = await fetch(`${API_BASE}/api/ping`);
+            const data = await res.json();
+            addOutput(data.message, 'success');
+        }
+
+        async function handleStats() {
+            const res = await fetch(`${API_BASE}/stats`);
+            const data = await res.json();
+            
+            const stats = `
+Server Statistics:
+  Store Size: ${data.store.size} / ${data.store.capacity} (${data.store.utilizationPercent}%)
+  Total Operations: ${data.aggregated.totalOperations.toLocaleString()}
+  Cache Hit Rate: ${data.aggregated.hitRatePercent.toFixed(2)}%
+  Active Connections: ${data.server.activeConnections}
+  Total Connections: ${data.server.totalConnections}
+  Total Commands: ${data.server.totalCommands}
+  
+Operations:
+  Gets: ${data.aggregated.totalGets.toLocaleString()}
+  Sets: ${data.aggregated.totalSets.toLocaleString()}
+  Deletes: ${data.aggregated.totalDeletes.toLocaleString()}
+  Expires: ${data.aggregated.totalExpires.toLocaleString()}
+  
+Cache:
+  Hits: ${data.aggregated.cacheHits.toLocaleString()}
+  Misses: ${data.aggregated.cacheMisses.toLocaleString()}
+  Evictions: ${data.aggregated.evictions.toLocaleString()}
+  Expirations: ${data.aggregated.expirations.toLocaleString()}
+`;
+            addOutput(stats, 'info');
+        }
+
+        async function handleHealth() {
+            const res = await fetch(`${API_BASE}/health`);
+            const data = await res.json();
+            
+            const health = `
+Health Check:
+  Status: ${data.status}
+  NIO Server: ${data.nioServer}
+  Store Size: ${data.storeSize}
+  Timestamp: ${new Date(data.timestamp).toLocaleString()}
+`;
+            addOutput(health, 'success');
+        }
+
+        // Handle input
+        commandInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const command = commandInput.value;
+                commandInput.value = '';
+                executeCommand(command);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (historyIndex < commandHistory.length - 1) {
+                    historyIndex++;
+                    commandInput.value = commandHistory[historyIndex];
+                }
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (historyIndex > 0) {
+                    historyIndex--;
+                    commandInput.value = commandHistory[historyIndex];
+                } else if (historyIndex === 0) {
+                    historyIndex = -1;
+                    commandInput.value = '';
+                }
+            }
+        });
+
+        // Focus input on click
+        output.addEventListener('click', () => {
+            commandInput.focus();
+        });
+
+        // Auto-focus on load
+        window.addEventListener('load', () => {
+            commandInput.focus();
+        });
+    </script>
+</body>
+</html>
