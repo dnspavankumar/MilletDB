@@ -395,9 +395,6 @@ BV Raju Institute of Technology, Narsapur
 
 Passionate about **systems programming**, **backend engineering**, and **distributed systems**. MilletDB is a hands-on exploration of low-level database internals, concurrency patterns, and performance optimization.
 
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-blue?style=flat&logo=linkedin)](https://www.linkedin.com/in/pavanuppuluri/)
-[![GitHub](https://img.shields.io/badge/GitHub-Follow-black?style=flat&logo=github)](https://github.com/pavanuppuluri)
-
 ---
 
 ## 🏷️ Tags
