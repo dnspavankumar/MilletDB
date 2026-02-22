@@ -1,12 +1,16 @@
 package com.pavan.milletdb.snapshot;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
 import com.pavan.milletdb.kvstore.ConcurrentKVStore;
 import com.pavan.milletdb.kvstore.ShardedKVStore;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -23,14 +27,14 @@ import java.util.concurrent.TimeUnit;
  */
 public class SnapshotManager {
     
-    private final ObjectMapper objectMapper;
     private final Path snapshotDirectory;
     private ScheduledExecutorService snapshotExecutor;
     private ScheduledFuture<?> snapshotTask;
     private volatile boolean snapshotRunning;
     
     private static final String SNAPSHOT_FILE_PREFIX = "snapshot-";
-    private static final String SNAPSHOT_FILE_EXTENSION = ".json";
+    private static final String SNAPSHOT_FILE_EXTENSION = ".bin";
+    private static final String LEGACY_SNAPSHOT_FILE_EXTENSION = ".json";
     private static final long DEFAULT_SNAPSHOT_INTERVAL_SECONDS = 30;
     
     /**
@@ -42,9 +46,6 @@ public class SnapshotManager {
     public SnapshotManager(String snapshotDirectory) throws IOException {
         this.snapshotDirectory = Paths.get(snapshotDirectory);
         Files.createDirectories(this.snapshotDirectory);
-        
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
         this.snapshotRunning = false;
     }
     
@@ -148,7 +149,10 @@ public class SnapshotManager {
         Path snapshotFile = snapshotDirectory.resolve(filename);
         
         SnapshotData<K, V> snapshotData = captureSnapshot(store);
-        objectMapper.writeValue(snapshotFile.toFile(), snapshotData);
+        try (ObjectOutputStream out = new ObjectOutputStream(
+            new BufferedOutputStream(Files.newOutputStream(snapshotFile)))) {
+            out.writeObject(snapshotData);
+        }
         
         return snapshotFile;
     }
@@ -182,15 +186,26 @@ public class SnapshotManager {
         if (!Files.exists(snapshotFile)) {
             return false;
         }
-        
-        SnapshotData<K, V> snapshotData = objectMapper.readValue(
-            snapshotFile.toFile(),
-            objectMapper.getTypeFactory().constructParametricType(
-                SnapshotData.class,
-                Object.class,
-                Object.class
-            )
-        );
+
+        SnapshotData<K, V> snapshotData;
+        if (snapshotFile.getFileName().toString().endsWith(LEGACY_SNAPSHOT_FILE_EXTENSION)) {
+            ObjectMapper mapper = new ObjectMapper();
+            snapshotData = mapper.readValue(
+                snapshotFile.toFile(),
+                mapper.getTypeFactory().constructParametricType(
+                    SnapshotData.class,
+                    Object.class,
+                    Object.class
+                )
+            );
+        } else {
+            try (ObjectInputStream in = new ObjectInputStream(
+                new BufferedInputStream(Files.newInputStream(snapshotFile)))) {
+                snapshotData = (SnapshotData<K, V>) in.readObject();
+            } catch (ClassNotFoundException e) {
+                throw new IOException("Failed to deserialize snapshot: " + snapshotFile, e);
+            }
+        }
         
         restoreSnapshot(store, snapshotData);
         return true;
@@ -240,7 +255,7 @@ public class SnapshotManager {
     private File findLatestSnapshot() {
         File[] files = snapshotDirectory.toFile().listFiles(
             (dir, name) -> name.startsWith(SNAPSHOT_FILE_PREFIX) && 
-                          name.endsWith(SNAPSHOT_FILE_EXTENSION)
+                          (name.endsWith(SNAPSHOT_FILE_EXTENSION) || name.endsWith(LEGACY_SNAPSHOT_FILE_EXTENSION))
         );
         
         if (files == null || files.length == 0) {
@@ -270,7 +285,7 @@ public class SnapshotManager {
         
         File[] files = snapshotDirectory.toFile().listFiles(
             (dir, name) -> name.startsWith(SNAPSHOT_FILE_PREFIX) && 
-                          name.endsWith(SNAPSHOT_FILE_EXTENSION)
+                          (name.endsWith(SNAPSHOT_FILE_EXTENSION) || name.endsWith(LEGACY_SNAPSHOT_FILE_EXTENSION))
         );
         
         if (files == null || files.length <= keepCount) {
@@ -295,7 +310,8 @@ public class SnapshotManager {
     /**
      * Data structure for JSON serialization.
      */
-    static class SnapshotData<K, V> {
+    static class SnapshotData<K, V> implements Serializable {
+        private static final long serialVersionUID = 1L;
         public long timestamp;
         public int numShards;
         public int capacityPerShard;

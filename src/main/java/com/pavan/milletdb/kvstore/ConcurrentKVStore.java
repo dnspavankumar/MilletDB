@@ -1,11 +1,16 @@
 package com.pavan.milletdb.kvstore;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.pavan.milletdb.metrics.StatsCollector;
 
-import java.util.*;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.*;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Thread-safe key-value store with LRU eviction and TTL support.
@@ -17,10 +22,12 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 public class ConcurrentKVStore<K, V> {
     
-    private final LRUCache<K, V> cache;
+    private static final int DEFAULT_STRIPE_COUNT = 64;
+
+    private final Cache<K, V> cache;
     private final Map<K, Long> expirationMap;
-    private final Set<K> keys; // Track all keys for snapshot
-    private final ReadWriteLock lock;
+    private final ReentrantLock[] stripedLocks;
+    private final int capacity;
     private final StatsCollector stats;
     private ScheduledExecutorService cleanupExecutor;
     private ScheduledFuture<?> cleanupTask;
@@ -31,12 +38,36 @@ public class ConcurrentKVStore<K, V> {
     }
     
     public ConcurrentKVStore(int capacity, StatsCollector stats) {
-        this.cache = new LRUCache<>(capacity);
+        this.capacity = capacity;
         this.expirationMap = new ConcurrentHashMap<>();
-        this.keys = ConcurrentHashMap.newKeySet();
-        this.lock = new ReentrantReadWriteLock();
+        this.cache = Caffeine.newBuilder()
+            .maximumSize(capacity)
+            .removalListener((K key, V value, RemovalCause cause) -> {
+                if (cause == RemovalCause.SIZE) {
+                    stats.recordEviction();
+                }
+                if (key != null && cause != RemovalCause.REPLACED && cause != RemovalCause.EXPLICIT) {
+                    expirationMap.remove(key);
+                }
+            })
+            .build();
+        this.stripedLocks = createStripes(DEFAULT_STRIPE_COUNT);
         this.stats = stats;
         this.cleanupRunning = false;
+    }
+
+    private ReentrantLock[] createStripes(int stripeCount) {
+        ReentrantLock[] stripes = new ReentrantLock[stripeCount];
+        for (int i = 0; i < stripeCount; i++) {
+            stripes[i] = new ReentrantLock();
+        }
+        return stripes;
+    }
+
+    private ReentrantLock lockFor(K key) {
+        int hash = (key == null) ? 0 : key.hashCode();
+        hash ^= (hash >>> 16);
+        return stripedLocks[hash & (stripedLocks.length - 1)];
     }
     
     /**
@@ -46,14 +77,14 @@ public class ConcurrentKVStore<K, V> {
      * @param value the value to associate with the key
      */
     public void put(K key, V value) {
-        lock.writeLock().lock();
+        ReentrantLock keyLock = lockFor(key);
+        keyLock.lock();
         try {
             cache.put(key, value);
-            keys.add(key);
             expirationMap.remove(key); // Clear any existing expiration
             stats.recordSet();
         } finally {
-            lock.writeLock().unlock();
+            keyLock.unlock();
         }
     }
     
@@ -65,41 +96,46 @@ public class ConcurrentKVStore<K, V> {
      * @return the value associated with the key, or null if not found or expired
      */
     public V get(K key) {
-        lock.readLock().lock();
-        try {
-            // Check expiration first
-            Long expirationTime = expirationMap.get(key);
-            if (expirationTime != null && System.currentTimeMillis() > expirationTime) {
-                // Upgrade to write lock for removal
-                lock.readLock().unlock();
-                lock.writeLock().lock();
-                try {
-                    // Double-check after acquiring write lock
-                    expirationTime = expirationMap.get(key);
-                    if (expirationTime != null && System.currentTimeMillis() > expirationTime) {
-                        cache.remove(key);
-                        keys.remove(key);
-                        expirationMap.remove(key);
-                        stats.recordExpiration();
-                        stats.recordGet(false);
-                        return null;
-                    }
-                    // If not expired anymore, downgrade to read lock
-                    lock.readLock().lock();
-                } finally {
-                    lock.writeLock().unlock();
-                }
-            }
-            
-            V value = cache.get(key);
-            stats.recordGet(value != null);
-            return value;
-        } finally {
+        Long expirationTime = expirationMap.get(key);
+        long now = System.currentTimeMillis();
+
+        if (expirationTime != null && now > expirationTime) {
+            ReentrantLock keyLock = lockFor(key);
+            keyLock.lock();
             try {
-                lock.readLock().unlock();
-            } catch (IllegalMonitorStateException e) {
-                // Already unlocked during lock upgrade
+                Long currentExpiration = expirationMap.get(key);
+                if (currentExpiration != null && now > currentExpiration) {
+                    cache.invalidate(key);
+                    expirationMap.remove(key);
+                    stats.recordExpiration();
+                    stats.recordGet(false);
+                    return null;
+                }
+            } finally {
+                keyLock.unlock();
             }
+        }
+
+        V value = cache.getIfPresent(key);
+        stats.recordGet(value != null);
+        return value;
+    }
+
+    private V removeInternal(K key, boolean recordDelete) {
+        ReentrantLock keyLock = lockFor(key);
+        keyLock.lock();
+        try {
+            expirationMap.remove(key);
+            V removed = cache.getIfPresent(key);
+            if (removed != null) {
+                cache.invalidate(key);
+            }
+            if (recordDelete) {
+                stats.recordDelete(removed != null);
+            }
+            return removed;
+        } finally {
+            keyLock.unlock();
         }
     }
     
@@ -110,16 +146,7 @@ public class ConcurrentKVStore<K, V> {
      * @return the value that was removed, or null if key not found
      */
     public V remove(K key) {
-        lock.writeLock().lock();
-        try {
-            keys.remove(key);
-            expirationMap.remove(key);
-            V removed = cache.remove(key);
-            stats.recordDelete(removed != null);
-            return removed;
-        } finally {
-            lock.writeLock().unlock();
-        }
+        return removeInternal(key, true);
     }
     
     /**
@@ -134,10 +161,11 @@ public class ConcurrentKVStore<K, V> {
             throw new IllegalArgumentException("TTL must be positive");
         }
         
-        lock.writeLock().lock();
+        ReentrantLock keyLock = lockFor(key);
+        keyLock.lock();
         try {
             // Check if key exists in cache
-            V value = cache.get(key);
+            V value = cache.getIfPresent(key);
             boolean existed = value != null;
             
             if (existed) {
@@ -148,7 +176,7 @@ public class ConcurrentKVStore<K, V> {
             stats.recordExpire(existed);
             return existed;
         } finally {
-            lock.writeLock().unlock();
+            keyLock.unlock();
         }
     }
     
@@ -156,32 +184,31 @@ public class ConcurrentKVStore<K, V> {
      * Returns the current size of the store.
      */
     public int size() {
-        lock.readLock().lock();
-        try {
-            return cache.size();
-        } finally {
-            lock.readLock().unlock();
-        }
+        cache.cleanUp();
+        return Math.toIntExact(cache.estimatedSize());
     }
     
     /**
      * Returns the capacity of the store.
      */
     public int getCapacity() {
-        return cache.getCapacity();
+        return capacity;
     }
     
     /**
      * Clears all entries from the store.
      */
     public void clear() {
-        lock.writeLock().lock();
+        for (ReentrantLock stripedLock : stripedLocks) {
+            stripedLock.lock();
+        }
         try {
-            cache.clear();
-            keys.clear();
+            cache.invalidateAll();
             expirationMap.clear();
         } finally {
-            lock.writeLock().unlock();
+            for (int i = stripedLocks.length - 1; i >= 0; i--) {
+                stripedLocks[i].unlock();
+            }
         }
     }
     
@@ -273,40 +300,33 @@ public class ConcurrentKVStore<K, V> {
      */
     private int cleanupExpiredKeys() {
         long currentTime = System.currentTimeMillis();
-        List<K> expiredKeys = new ArrayList<>();
+        int removedCount = 0;
         
-        // First pass: identify expired keys (read lock)
-        lock.readLock().lock();
-        try {
-            for (Map.Entry<K, Long> entry : expirationMap.entrySet()) {
-                if (currentTime > entry.getValue()) {
-                    expiredKeys.add(entry.getKey());
-                }
+        for (Map.Entry<K, Long> entry : expirationMap.entrySet()) {
+            if (currentTime <= entry.getValue()) {
+                continue;
             }
-        } finally {
-            lock.readLock().unlock();
-        }
-        
-        // Second pass: remove expired keys (write lock)
-        if (!expiredKeys.isEmpty()) {
-            lock.writeLock().lock();
+
+            K key = entry.getKey();
+            ReentrantLock keyLock = lockFor(key);
+            keyLock.lock();
             try {
-                for (K key : expiredKeys) {
-                    // Double-check expiration under write lock
-                    Long expirationTime = expirationMap.get(key);
-                    if (expirationTime != null && currentTime > expirationTime) {
-                        cache.remove(key);
-                        keys.remove(key);
-                        expirationMap.remove(key);
-                        stats.recordExpiration();
+                Long expirationTime = expirationMap.get(key);
+                if (expirationTime != null && currentTime > expirationTime) {
+                    V existing = cache.getIfPresent(key);
+                    if (existing != null) {
+                        cache.invalidate(key);
                     }
+                    expirationMap.remove(key);
+                    stats.recordExpiration();
+                    removedCount++;
                 }
             } finally {
-                lock.writeLock().unlock();
+                keyLock.unlock();
             }
         }
         
-        return expiredKeys.size();
+        return removedCount;
     }
     
     /**
@@ -335,17 +355,26 @@ public class ConcurrentKVStore<K, V> {
     public Map<K, SnapshotEntry<V>> getAllEntries() {
         Map<K, SnapshotEntry<V>> snapshot = new HashMap<>();
         
-        lock.readLock().lock();
-        try {
-            for (K key : keys) {
-                V value = cache.get(key);
-                if (value != null) {
-                    Long expiration = expirationMap.get(key);
-                    snapshot.put(key, new SnapshotEntry<>(value, expiration));
+        // Snapshot over cache keyset; each key is read under its stripe lock.
+        for (K key : new ArrayList<>(cache.asMap().keySet())) {
+            ReentrantLock keyLock = lockFor(key);
+            keyLock.lock();
+            try {
+                V value = cache.getIfPresent(key);
+                if (value == null) {
+                    continue;
                 }
+
+                Long expiration = expirationMap.get(key);
+                if (expiration != null && System.currentTimeMillis() > expiration) {
+                    cache.invalidate(key);
+                    expirationMap.remove(key);
+                    continue;
+                }
+                snapshot.put(key, new SnapshotEntry<>(value, expiration));
+            } finally {
+                keyLock.unlock();
             }
-        } finally {
-            lock.readLock().unlock();
         }
         
         return snapshot;
@@ -358,32 +387,34 @@ public class ConcurrentKVStore<K, V> {
      * @param entries the entries to restore
      */
     public void restoreFromSnapshot(Map<K, SnapshotEntry<V>> entries) {
-        lock.writeLock().lock();
-        try {
-            long currentTime = System.currentTimeMillis();
-            for (Map.Entry<K, SnapshotEntry<V>> entry : entries.entrySet()) {
-                K key = entry.getKey();
-                SnapshotEntry<V> snapshotEntry = entry.getValue();
-                
-                // Only restore non-expired entries
-                if (snapshotEntry.expirationTime == null || 
-                    currentTime < snapshotEntry.expirationTime) {
-                    cache.put(key, snapshotEntry.value);
-                    keys.add(key);
-                    if (snapshotEntry.expirationTime != null) {
-                        expirationMap.put(key, snapshotEntry.expirationTime);
-                    }
-                }
+        long currentTime = System.currentTimeMillis();
+        for (Map.Entry<K, SnapshotEntry<V>> entry : entries.entrySet()) {
+            K key = entry.getKey();
+            SnapshotEntry<V> snapshotEntry = entry.getValue();
+            if (snapshotEntry.expirationTime != null && currentTime >= snapshotEntry.expirationTime) {
+                continue;
             }
-        } finally {
-            lock.writeLock().unlock();
+
+            ReentrantLock keyLock = lockFor(key);
+            keyLock.lock();
+            try {
+                cache.put(key, snapshotEntry.value);
+                if (snapshotEntry.expirationTime != null) {
+                    expirationMap.put(key, snapshotEntry.expirationTime);
+                } else {
+                    expirationMap.remove(key);
+                }
+            } finally {
+                keyLock.unlock();
+            }
         }
     }
     
     /**
      * Entry for snapshot serialization.
      */
-    public static class SnapshotEntry<V> {
+    public static class SnapshotEntry<V> implements Serializable {
+        private static final long serialVersionUID = 1L;
         public V value;
         public Long expirationTime;
         

@@ -11,6 +11,8 @@ public class ShardedKVStore<K, V> {
     
     private final ConcurrentKVStore<K, V>[] shards;
     private final int shardMask;
+    private final int maxKeyBytes;
+    private final int maxValueBytes;
     
     /**
      * Creates a sharded KV store with the specified number of shards and capacity per shard.
@@ -20,18 +22,61 @@ public class ShardedKVStore<K, V> {
      */
     @SuppressWarnings("unchecked")
     public ShardedKVStore(int numShards, int capacityPerShard) {
+        this(numShards, capacityPerShard, Integer.MAX_VALUE, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Creates a sharded KV store with explicit per-entry size limits.
+     *
+     * @param numShards number of shards (must be a power of 2)
+     * @param capacityPerShard capacity for each individual shard
+     * @param maxKeyBytes maximum allowed key size in UTF-8 bytes (for String keys)
+     * @param maxValueBytes maximum allowed value size in UTF-8 bytes (for String values)
+     */
+    @SuppressWarnings("unchecked")
+    public ShardedKVStore(int numShards, int capacityPerShard, int maxKeyBytes, int maxValueBytes) {
         if (numShards <= 0 || (numShards & (numShards - 1)) != 0) {
             throw new IllegalArgumentException("Number of shards must be a positive power of 2");
         }
         if (capacityPerShard <= 0) {
             throw new IllegalArgumentException("Capacity per shard must be positive");
         }
+        if (maxKeyBytes <= 0 || maxValueBytes <= 0) {
+            throw new IllegalArgumentException("Max key/value bytes must be positive");
+        }
         
         this.shards = (ConcurrentKVStore<K, V>[]) new ConcurrentKVStore[numShards];
         this.shardMask = numShards - 1;
+        this.maxKeyBytes = maxKeyBytes;
+        this.maxValueBytes = maxValueBytes;
         
         for (int i = 0; i < numShards; i++) {
             shards[i] = new ConcurrentKVStore<>(capacityPerShard);
+        }
+    }
+
+    private static int utf8Size(Object obj) {
+        if (obj == null) {
+            return 0;
+        }
+        if (obj instanceof String str) {
+            return str.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        }
+        if (obj instanceof byte[] bytes) {
+            return bytes.length;
+        }
+        return -1;
+    }
+
+    private void validateEntrySize(K key, V value) {
+        int keySize = utf8Size(key);
+        if (keySize >= 0 && keySize > maxKeyBytes) {
+            throw new IllegalArgumentException("Key size exceeds limit: " + keySize + " > " + maxKeyBytes + " bytes");
+        }
+
+        int valueSize = utf8Size(value);
+        if (valueSize >= 0 && valueSize > maxValueBytes) {
+            throw new IllegalArgumentException("Value size exceeds limit: " + valueSize + " > " + maxValueBytes + " bytes");
         }
     }
     
@@ -69,6 +114,7 @@ public class ShardedKVStore<K, V> {
      * @param value the value to associate with the key
      */
     public void put(K key, V value) {
+        validateEntrySize(key, value);
         getShard(key).put(key, value);
     }
     

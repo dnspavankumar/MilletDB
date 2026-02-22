@@ -47,6 +47,7 @@ public class NioServer {
     private static final int BUFFER_SIZE = 1024;
     private static final String DELIMITER = "\r\n";
     private static final int DEFAULT_WORKER_THREADS = 10;
+    private static final int MAX_COMMAND_BYTES = 1024 * 1024;
     
     /**
      * Creates a new NIO server with default worker thread count.
@@ -228,6 +229,11 @@ public class NioServer {
                 buffer.flip();
                 String data = StandardCharsets.UTF_8.decode(buffer).toString();
                 context.appendData(data);
+                if (context.isOversized()) {
+                    sendResponse(clientChannel, Response.error("Command too large").serialize());
+                    closeClient(key);
+                    return;
+                }
                 
                 // Process complete commands
                 String commandLine;
@@ -262,9 +268,11 @@ public class NioServer {
      * Sends a response to the client.
      */
     private void sendResponse(SocketChannel channel, String response) throws IOException {
-        ByteBuffer buffer = ByteBuffer.wrap(response.getBytes(StandardCharsets.UTF_8));
-        while (buffer.hasRemaining()) {
-            channel.write(buffer);
+        synchronized (channel) {
+            ByteBuffer buffer = ByteBuffer.wrap(response.getBytes(StandardCharsets.UTF_8));
+            while (buffer.hasRemaining()) {
+                channel.write(buffer);
+            }
         }
     }
     
@@ -312,9 +320,17 @@ public class NioServer {
      */
     private static class ClientContext {
         private final StringBuilder buffer = new StringBuilder();
+        private volatile boolean oversized;
         
         void appendData(String data) {
             buffer.append(data);
+            if (buffer.length() > MAX_COMMAND_BYTES) {
+                oversized = true;
+            }
+        }
+
+        boolean isOversized() {
+            return oversized;
         }
         
         String nextCommand() {

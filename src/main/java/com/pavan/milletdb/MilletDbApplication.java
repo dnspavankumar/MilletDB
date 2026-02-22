@@ -20,6 +20,8 @@ public class MilletDbApplication implements CommandLineRunner, DisposableBean {
 	
 	private static final int NUM_SHARDS = 8;
 	private static final int CAPACITY_PER_SHARD = 10_000;
+	private static final int MAX_KEY_BYTES = 4 * 1024;
+	private static final int MAX_VALUE_BYTES = 1024 * 1024;
 	private static final int SERVER_PORT = 8080;
 	private static final int WORKER_THREADS = 20;
 	private static final String SNAPSHOT_DIR = "./snapshots";
@@ -62,7 +64,7 @@ public class MilletDbApplication implements CommandLineRunner, DisposableBean {
 		logger.info("  - Capacity per shard: {}", CAPACITY_PER_SHARD);
 		logger.info("  - Total capacity: {}", NUM_SHARDS * CAPACITY_PER_SHARD);
 		
-		store = new ShardedKVStore<>(NUM_SHARDS, CAPACITY_PER_SHARD);
+		store = new ShardedKVStore<>(NUM_SHARDS, CAPACITY_PER_SHARD, MAX_KEY_BYTES, MAX_VALUE_BYTES);
 		logger.info("ShardedKVStore initialized successfully");
 	}
 	
@@ -169,7 +171,7 @@ public class MilletDbApplication implements CommandLineRunner, DisposableBean {
 	@Bean
 	public ShardedKVStore<String, String> shardedKVStore() {
 		if (store == null) {
-			store = new ShardedKVStore<>(NUM_SHARDS, CAPACITY_PER_SHARD);
+			store = new ShardedKVStore<>(NUM_SHARDS, CAPACITY_PER_SHARD, MAX_KEY_BYTES, MAX_VALUE_BYTES);
 		}
 		return store;
 	}

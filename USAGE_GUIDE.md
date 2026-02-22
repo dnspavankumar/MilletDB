@@ -719,4 +719,4 @@ lsof -i :8080                 # Linux/Mac
 
 ---
 
-> **Happy Caching!** 🌾 For questions or issues, open an issue on [GitHub](https://github.com/pavanuppuluri/MilletDB).
+> **Happy Caching!** 🌾 For questions or issues, open an issue on [GitHub](https://github.com/dnspavankumar/MilletDB).

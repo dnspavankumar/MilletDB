@@ -140,7 +140,6 @@ PING
 ### Clone the Repository
 
 ```bash
-git clone https://github.com/pavanuppuluri/MilletDB.git
 cd MilletDB
 ```
 
