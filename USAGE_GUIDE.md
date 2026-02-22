@@ -65,11 +65,11 @@ Initializing ShardedKVStore...
   - Total capacity: 80000
 ShardedKVStore initialized successfully
 ...
-NIO Server started successfully
+Netty Server started successfully
 ============================================================
 MilletDB is ready to accept connections!
 
-NIO Server (TCP):
+Netty Server (TCP):
   - Address: localhost:8080
   - Protocol: Text-based (Redis-like)
   
@@ -373,7 +373,7 @@ curl http://localhost:8081/health
 ```json
 {
   "status": "UP",
-  "nioServer": "RUNNING",
+  "nettyServer": "RUNNING",
   "storeSize": 42,
   "timestamp": 1762360583938
 }
@@ -666,7 +666,7 @@ lsof -i :8080                 # Linux/Mac
 
 **Possible Causes:**
 1. **TTL Expiration**: Check if you set an EXPIRE on the key
-2. **LRU Eviction**: Store reached capacity, oldest keys evicted
+2. **Eviction**: Store reached capacity, oldest keys evicted
 3. **Server Restart**: Data is in-memory, lost on restart (unless snapshot loaded)
 
 **Solution:**
@@ -720,3 +720,4 @@ lsof -i :8080                 # Linux/Mac
 ---
 
 > **Happy Caching!** 🌾 For questions or issues, open an issue on [GitHub](https://github.com/dnspavankumar/MilletDB).
+

@@ -221,5 +221,5 @@ EXPIRE mykey -100
 
 - Each client connection is handled independently
 - The server supports multiple concurrent connections
-- Connections are non-blocking using Java NIO
+- Connections are handled by Netty event loops (non-blocking)
 - Use `QUIT` command or close the socket to disconnect gracefully

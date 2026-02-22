@@ -18,12 +18,12 @@ import java.util.Map;
 public class StatsController {
     
     private final ShardedKVStore<String, String> store;
-    private final NioServer nioServer;
+    private final NettyServer nettyServer;
     
     @Autowired
-    public StatsController(ShardedKVStore<String, String> store, NioServer nioServer) {
+    public StatsController(ShardedKVStore<String, String> store, NettyServer nettyServer) {
         this.store = store;
-        this.nioServer = nioServer;
+        this.nettyServer = nettyServer;
     }
     
     /**
@@ -55,7 +55,7 @@ public class StatsController {
     public Map<String, Object> health() {
         Map<String, Object> response = new HashMap<>();
         response.put("status", "UP");
-        response.put("nioServer", nioServer.isRunning() ? "RUNNING" : "STOPPED");
+        response.put("nettyServer", nettyServer.isRunning() ? "RUNNING" : "STOPPED");
         response.put("storeSize", store.size());
         response.put("timestamp", System.currentTimeMillis());
         return response;
@@ -64,12 +64,12 @@ public class StatsController {
     private Map<String, Object> getServerInfo() {
         Map<String, Object> serverInfo = new HashMap<>();
         
-        NioServer.ServerStats serverStats = nioServer.getStats();
+        NettyServer.ServerStats serverStats = nettyServer.getStats();
         serverInfo.put("totalConnections", serverStats.totalConnections);
         serverInfo.put("activeConnections", serverStats.activeConnections);
         serverInfo.put("totalCommands", serverStats.totalCommands);
-        serverInfo.put("running", nioServer.isRunning());
-        serverInfo.put("port", nioServer.getPort());
+        serverInfo.put("running", nettyServer.isRunning());
+        serverInfo.put("port", nettyServer.getPort());
         
         return serverInfo;
     }

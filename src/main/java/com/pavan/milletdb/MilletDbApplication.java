@@ -1,10 +1,11 @@
 package com.pavan.milletdb;
 
 import com.pavan.milletdb.kvstore.ShardedKVStore;
-import com.pavan.milletdb.server.NioServer;
+import com.pavan.milletdb.server.NettyServer;
 import com.pavan.milletdb.snapshot.SnapshotManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
@@ -22,11 +23,24 @@ public class MilletDbApplication implements CommandLineRunner, DisposableBean {
 	private static final int CAPACITY_PER_SHARD = 10_000;
 	private static final int MAX_KEY_BYTES = 4 * 1024;
 	private static final int MAX_VALUE_BYTES = 1024 * 1024;
-	private static final int SERVER_PORT = 8080;
-	private static final int WORKER_THREADS = 20;
 	private static final String SNAPSHOT_DIR = "./snapshots";
+
+	@Value("${milletdb.tcp.enabled:true}")
+	private boolean tcpEnabled;
+
+	@Value("${milletdb.tcp.port:8080}")
+	private int serverPort;
+
+	@Value("${milletdb.tcp.workerThreads:20}")
+	private int workerThreads;
+
+	@Value("${milletdb.snapshot.enabled:true}")
+	private boolean snapshotEnabled;
+
+	@Value("${milletdb.snapshot.intervalSeconds:30}")
+	private long snapshotIntervalSeconds;
 	
-	private NioServer server;
+	private NettyServer server;
 	private SnapshotManager snapshotManager;
 	private ShardedKVStore<String, String> store;
 
@@ -39,7 +53,11 @@ public class MilletDbApplication implements CommandLineRunner, DisposableBean {
 		printBanner();
 		initializeStore();
 		initializeSnapshotManager();
-		startServer();
+		if (tcpEnabled) {
+			startServer();
+		} else {
+			logger.info("TCP server startup is disabled (milletdb.tcp.enabled=false)");
+		}
 		printStartupInfo();
 		
 		// Register shutdown hook
@@ -69,6 +87,11 @@ public class MilletDbApplication implements CommandLineRunner, DisposableBean {
 	}
 	
 	private void initializeSnapshotManager() throws IOException {
+		if (!snapshotEnabled) {
+			logger.info("Snapshot manager is disabled (milletdb.snapshot.enabled=false)");
+			return;
+		}
+
 		logger.info("Initializing SnapshotManager...");
 		logger.info("  - Snapshot directory: {}", SNAPSHOT_DIR);
 		
@@ -83,30 +106,34 @@ public class MilletDbApplication implements CommandLineRunner, DisposableBean {
 			logger.info("No existing snapshot found, starting with empty store");
 		}
 		
-		// Start periodic snapshots (every 30 seconds)
-		snapshotManager.startPeriodicSnapshots(store, 30);
-		logger.info("Periodic snapshots enabled (interval: 30 seconds)");
+		// Start periodic snapshots
+		snapshotManager.startPeriodicSnapshots(store, snapshotIntervalSeconds);
+		logger.info("Periodic snapshots enabled (interval: {} seconds)", snapshotIntervalSeconds);
 	}
 	
 	private void startServer() throws IOException {
-		logger.info("Starting NIO Server...");
-		logger.info("  - Port: {}", SERVER_PORT);
-		logger.info("  - Worker threads: {}", WORKER_THREADS);
+		logger.info("Starting Netty Server...");
+		logger.info("  - Port: {}", serverPort);
+		logger.info("  - Worker threads: {}", workerThreads);
 		
-		server = new NioServer(store, SERVER_PORT, WORKER_THREADS);
+		server = new NettyServer(store, serverPort, workerThreads);
 		server.start();
 		
-		logger.info("NIO Server started successfully");
+		logger.info("Netty Server started successfully");
 	}
 	
 	private void printStartupInfo() {
 		logger.info("=".repeat(60));
 		logger.info("MilletDB is ready to accept connections!");
 		logger.info("");
-		logger.info("NIO Server (TCP):");
-		logger.info("  - Address: localhost:{}", SERVER_PORT);
-		logger.info("  - Protocol: Text-based (Redis-like)");
-		logger.info("  - Connect: telnet localhost {} or nc localhost {}", SERVER_PORT, SERVER_PORT);
+		logger.info("Netty Server (TCP):");
+		if (tcpEnabled) {
+			logger.info("  - Address: localhost:{}", serverPort);
+			logger.info("  - Protocol: Text-based (Redis-like)");
+			logger.info("  - Connect: telnet localhost {} or nc localhost {}", serverPort, serverPort);
+		} else {
+			logger.info("  - Disabled (milletdb.tcp.enabled=false)");
+		}
 		logger.info("");
 		logger.info("REST API (HTTP):");
 		logger.info("  - Address: http://localhost:8081");
@@ -135,9 +162,9 @@ public class MilletDbApplication implements CommandLineRunner, DisposableBean {
 		
 		// Stop server
 		if (server != null && server.isRunning()) {
-			logger.info("Stopping NIO Server...");
+			logger.info("Stopping Netty Server...");
 			server.stop();
-			logger.info("NIO Server stopped");
+			logger.info("Netty Server stopped");
 		}
 		
 		// Save final snapshot
@@ -155,7 +182,7 @@ public class MilletDbApplication implements CommandLineRunner, DisposableBean {
 		
 		// Print final statistics
 		if (server != null) {
-			NioServer.ServerStats stats = server.getStats();
+			NettyServer.ServerStats stats = server.getStats();
 			logger.info("");
 			logger.info("Final Statistics:");
 			logger.info("  - Total connections: {}", stats.totalConnections);
@@ -177,9 +204,9 @@ public class MilletDbApplication implements CommandLineRunner, DisposableBean {
 	}
 	
 	@Bean
-	public NioServer nioServer() {
+	public NettyServer nettyServer() {
 		if (server == null) {
-			server = new NioServer(shardedKVStore(), SERVER_PORT, WORKER_THREADS);
+			server = new NettyServer(shardedKVStore(), serverPort, workerThreads);
 		}
 		return server;
 	}

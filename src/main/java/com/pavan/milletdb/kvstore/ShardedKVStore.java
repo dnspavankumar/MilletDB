@@ -1,5 +1,9 @@
 package com.pavan.milletdb.kvstore;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+
 /**
  * Sharded key-value store that distributes keys across multiple shards for improved concurrency.
  * Uses hash-based sharding to minimize lock contention.
@@ -13,6 +17,7 @@ public class ShardedKVStore<K, V> {
     private final int shardMask;
     private final int maxKeyBytes;
     private final int maxValueBytes;
+    private final ReentrantReadWriteLock snapshotGate;
     
     /**
      * Creates a sharded KV store with the specified number of shards and capacity per shard.
@@ -49,6 +54,7 @@ public class ShardedKVStore<K, V> {
         this.shardMask = numShards - 1;
         this.maxKeyBytes = maxKeyBytes;
         this.maxValueBytes = maxValueBytes;
+        this.snapshotGate = new ReentrantReadWriteLock();
         
         for (int i = 0; i < numShards; i++) {
             shards[i] = new ConcurrentKVStore<>(capacityPerShard);
@@ -114,8 +120,14 @@ public class ShardedKVStore<K, V> {
      * @param value the value to associate with the key
      */
     public void put(K key, V value) {
-        validateEntrySize(key, value);
-        getShard(key).put(key, value);
+        ReentrantReadWriteLock.ReadLock gate = snapshotGate.readLock();
+        gate.lock();
+        try {
+            validateEntrySize(key, value);
+            getShard(key).put(key, value);
+        } finally {
+            gate.unlock();
+        }
     }
     
     /**
@@ -125,7 +137,13 @@ public class ShardedKVStore<K, V> {
      * @return the value associated with the key, or null if not found or expired
      */
     public V get(K key) {
-        return getShard(key).get(key);
+        ReentrantReadWriteLock.ReadLock gate = snapshotGate.readLock();
+        gate.lock();
+        try {
+            return getShard(key).get(key);
+        } finally {
+            gate.unlock();
+        }
     }
     
     /**
@@ -135,7 +153,13 @@ public class ShardedKVStore<K, V> {
      * @return the value that was removed, or null if key not found
      */
     public V remove(K key) {
-        return getShard(key).remove(key);
+        ReentrantReadWriteLock.ReadLock gate = snapshotGate.readLock();
+        gate.lock();
+        try {
+            return getShard(key).remove(key);
+        } finally {
+            gate.unlock();
+        }
     }
     
     /**
@@ -146,18 +170,30 @@ public class ShardedKVStore<K, V> {
      * @return true if the key exists and expiration was set, false otherwise
      */
     public boolean expire(K key, long ttlMillis) {
-        return getShard(key).expire(key, ttlMillis);
+        ReentrantReadWriteLock.ReadLock gate = snapshotGate.readLock();
+        gate.lock();
+        try {
+            return getShard(key).expire(key, ttlMillis);
+        } finally {
+            gate.unlock();
+        }
     }
     
     /**
      * Returns the total size across all shards.
      */
     public int size() {
-        int totalSize = 0;
-        for (ConcurrentKVStore<K, V> shard : shards) {
-            totalSize += shard.size();
+        ReentrantReadWriteLock.ReadLock gate = snapshotGate.readLock();
+        gate.lock();
+        try {
+            int totalSize = 0;
+            for (ConcurrentKVStore<K, V> shard : shards) {
+                totalSize += shard.size();
+            }
+            return totalSize;
+        } finally {
+            gate.unlock();
         }
-        return totalSize;
     }
     
     /**
@@ -185,8 +221,14 @@ public class ShardedKVStore<K, V> {
      * Clears all entries from all shards.
      */
     public void clear() {
-        for (ConcurrentKVStore<K, V> shard : shards) {
-            shard.clear();
+        ReentrantReadWriteLock.ReadLock gate = snapshotGate.readLock();
+        gate.lock();
+        try {
+            for (ConcurrentKVStore<K, V> shard : shards) {
+                shard.clear();
+            }
+        } finally {
+            gate.unlock();
         }
     }
     
@@ -197,7 +239,13 @@ public class ShardedKVStore<K, V> {
      * @return true if the key exists and has not expired
      */
     public boolean containsKey(K key) {
-        return getShard(key).containsKey(key);
+        ReentrantReadWriteLock.ReadLock gate = snapshotGate.readLock();
+        gate.lock();
+        try {
+            return getShard(key).containsKey(key);
+        } finally {
+            gate.unlock();
+        }
     }
     
     /**
@@ -210,7 +258,52 @@ public class ShardedKVStore<K, V> {
         if (shardIndex < 0 || shardIndex >= shards.length) {
             throw new IllegalArgumentException("Invalid shard index");
         }
-        return shards[shardIndex].size();
+        ReentrantReadWriteLock.ReadLock gate = snapshotGate.readLock();
+        gate.lock();
+        try {
+            return shards[shardIndex].size();
+        } finally {
+            gate.unlock();
+        }
+    }
+
+    /**
+     * Captures a globally consistent snapshot view across all shards.
+     *
+     * @return shard-indexed snapshot entries
+     */
+    public Map<Integer, Map<K, ConcurrentKVStore.SnapshotEntry<V>>> captureSnapshot() {
+        ReentrantReadWriteLock.WriteLock gate = snapshotGate.writeLock();
+        gate.lock();
+        try {
+            Map<Integer, Map<K, ConcurrentKVStore.SnapshotEntry<V>>> snapshot = new HashMap<>();
+            for (int i = 0; i < shards.length; i++) {
+                snapshot.put(i, shards[i].getAllEntries());
+            }
+            return snapshot;
+        } finally {
+            gate.unlock();
+        }
+    }
+
+    /**
+     * Restores shard snapshots while blocking concurrent store operations.
+     *
+     * @param snapshot shard-indexed snapshot entries
+     */
+    public void restoreSnapshot(Map<Integer, Map<K, ConcurrentKVStore.SnapshotEntry<V>>> snapshot) {
+        ReentrantReadWriteLock.WriteLock gate = snapshotGate.writeLock();
+        gate.lock();
+        try {
+            for (int i = 0; i < shards.length; i++) {
+                Map<K, ConcurrentKVStore.SnapshotEntry<V>> shardData = snapshot.get(i);
+                if (shardData != null) {
+                    shards[i].restoreFromSnapshot(shardData);
+                }
+            }
+        } finally {
+            gate.unlock();
+        }
     }
     
     /**

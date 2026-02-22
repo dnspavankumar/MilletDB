@@ -1,154 +1,89 @@
-# Running JMH Benchmarks
+# MilletDB Benchmarks
 
-MilletDB includes two types of JMH benchmarks to measure performance:
+This file contains **measured** benchmark output from this repository, not synthetic estimates.
 
-1. **Throughput Benchmark**: Measures operations per millisecond
-2. **Latency Benchmark**: Measures average time per operation in nanoseconds
+## Benchmark Environment
 
-## 1. Throughput Benchmark (ShardedKVStoreBenchmark)
+- Date: `2026-02-22 11:15:59 +05:30`
+- OS: `Windows 11 Home Single Language 10.0.26200`
+- CPU: `11th Gen Intel Core i5-1135G7` (`4` cores / `8` logical processors)
+- RAM: `~19.75 GB` visible
+- JVM: `Java 25.0.1 LTS (HotSpot)`
 
-Compares single-shard vs multi-shard (16 shards) throughput with varying thread counts.
+## Commands Used
 
-### Running the Throughput Benchmark
-
-```bash
-# Using Maven
-./mvnw test-compile exec:java \
-  -Dexec.mainClass="com.pavan.milletdb.kvstore.ShardedKVStoreBenchmark" \
-  -Dexec.classpathScope=test
+```powershell
+./mvnw clean test-compile
+./mvnw dependency:build-classpath -DincludeScope=runtime -Dmdep.outputFile=target/runtime-classpath.txt
 ```
 
-### Configuration
+Then:
 
-- **Workload**: 70% reads, 25% writes, 5% removes
-- **Key Range**: 1000 keys
-- **Capacity per Shard**: 10,000 entries
-- **Single Shard**: 1 shard with 10,000 capacity
-- **Multi-Shard**: 16 shards with 10,000 capacity each
-- **Thread Counts**: 1, 2, 4, 8
-- **Warmup**: 3 iterations, 1 second each
-- **Measurement**: 5 iterations, 1 second each
+```powershell
+$cp = Get-Content -Raw target/runtime-classpath.txt
+$fullCp = "$cp;target/classes"
 
-### Expected Results
+# Throughput (JMH)
+java -cp $fullCp org.openjdk.jmh.Main com.pavan.milletdb.kvstore.ShardedKVStoreBenchmark -wi 2 -i 3 -w 1s -r 1s -f 1
 
-```
-Benchmark                    Threads  Score (ops/ms)
-────────────────────────────────────────────────────
-SingleShard.operations       1        ~50,000
-SingleShard.operations       2        ~45,000
-SingleShard.operations       4        ~35,000
-SingleShard.operations       8        ~25,000
-
-MultiShard.operations        1        ~48,000
-MultiShard.operations        2        ~90,000
-MultiShard.operations        4        ~170,000
-MultiShard.operations        8        ~300,000
+# Latency (JMH, focused subset)
+java -cp $fullCp org.openjdk.jmh.Main 'com.pavan.milletdb.kvstore.LatencyBenchmark.(get_1Thread|set_1Thread|mixed_1Thread)' -p shardCount=1,8,16 -wi 2 -i 3 -w 1s -r 1s -f 1
 ```
 
-**Key Insight**: Multi-shard shows linear scaling with thread count.
+And for end-to-end TCP:
 
-## 2. Latency Benchmark (LatencyBenchmark)
-
-Measures average latency (time per operation) for GET, SET, and mixed operations across different shard counts and thread counts.
-
-### Running the Latency Benchmark
-
-```bash
-# Using Maven
-./mvnw test-compile exec:java \
-  -Dexec.mainClass="com.pavan.milletdb.kvstore.LatencyBenchmark" \
-  -Dexec.classpathScope=test
+```powershell
+$fullCp = "target/test-classes;target/classes;$cp"
+java -cp $fullCp com.pavan.milletdb.server.NettyServerLoadBenchmark 64 20 0.8
+java -cp $fullCp com.pavan.milletdb.server.NettyServerLoadBenchmark 32 20 0.8
 ```
 
-### Configuration
+Raw output is stored in:
 
-- **Operations**: GET, SET, Mixed (50/50)
-- **Key Range**: 1000 keys (50% pre-populated)
-- **Capacity per Shard**: 10,000 entries
-- **Shard Counts**: 1, 2, 4, 8, 16
-- **Thread Counts**: 1, 2, 4, 8, 16
-- **Warmup**: 3 iterations, 2 seconds each
-- **Measurement**: 5 iterations, 2 seconds each
-- **Output**: Average time in nanoseconds
+- `target/benchmarks/throughput-jmh.txt`
+- `target/benchmarks/latency-jmh.txt`
+- `target/benchmarks/netty-load.txt`
 
-### Expected Results
+## Throughput Results (JMH, ops/ms)
 
-#### GET Operation Latency
+| Benchmark | Score |
+|---|---:|
+| `multiShard_1Thread` | `1596.000` |
+| `multiShard_2Threads` | `2007.857` |
+| `multiShard_4Threads` | `2013.163` |
+| `multiShard_8Threads` | `2897.683` |
+| `singleShard_1Thread` | `2061.335` |
+| `singleShard_2Threads` | `1565.376` |
+| `singleShard_4Threads` | `1575.086` |
+| `singleShard_8Threads` | `2377.302` |
 
-| Shards | 1 Thread | 2 Threads | 4 Threads | 8 Threads | 16 Threads |
-|--------|----------|-----------|-----------|-----------|------------|
-| 1      | 45 ns    | 120 ns    | 280 ns    | 650 ns    | 1,400 ns   |
-| 8      | 52 ns    | 70 ns     | 110 ns    | 220 ns    | 480 ns     |
-| 16     | 55 ns    | 68 ns     | 95 ns     | 175 ns    | 350 ns     |
+Notes:
 
-#### SET Operation Latency
+- This run shows better high-thread throughput for `multiShard_*` than `singleShard_*`.
+- Confidence intervals are wide in this environment (laptop + background noise). Use longer runs (`-wi/-i/-r`) for publication-grade numbers.
 
-| Shards | 1 Thread | 2 Threads | 4 Threads | 8 Threads | 16 Threads |
-|--------|----------|-----------|-----------|-----------|------------|
-| 1      | 65 ns    | 180 ns    | 420 ns    | 950 ns    | 2,100 ns   |
-| 8      | 72 ns    | 95 ns     | 165 ns    | 340 ns    | 720 ns     |
-| 16     | 75 ns    | 90 ns     | 140 ns    | 260 ns    | 520 ns     |
+## Latency Results (JMH, ns/op)
 
-**Key Insights**:
-- Single-threaded latency: 45-75 nanoseconds
-- More shards = better latency under high concurrency
-- 16 shards + 16 threads: Sub-microsecond latency
+| Benchmark | Shards | Score |
+|---|---:|---:|
+| `get_1Thread` | `1` | `73.414` |
+| `get_1Thread` | `8` | `80.611` |
+| `get_1Thread` | `16` | `106.992` |
+| `mixed_1Thread` | `1` | `564.165` |
+| `mixed_1Thread` | `8` | `500.101` |
+| `mixed_1Thread` | `16` | `544.452` |
+| `set_1Thread` | `1` | `826.617` |
+| `set_1Thread` | `8` | `933.540` |
+| `set_1Thread` | `16` | `943.561` |
 
-## Interpreting Results
+## Netty End-to-End TCP Results
 
-### Throughput Benchmark
-- **Score**: Operations per millisecond (higher is better)
-- **Error**: Margin of error (±)
-- **Trend**: Multi-shard should scale linearly with threads
+| Clients | Duration | GET Ratio | Throughput (RPS) | Avg Latency (us) | Errors |
+|---:|---:|---:|---:|---:|---:|
+| `64` | `20s` | `0.8` | `85018.60` | `746.21` | `0` |
+| `32` | `20s` | `0.8` | `95183.22` | `333.13` | `0` |
 
-### Latency Benchmark
-- **Score**: Nanoseconds per operation (lower is better)
-- **Error**: Margin of error (±)
-- **Trend**: More shards reduce latency under high concurrency
+Interpretation:
 
-## Running Custom Benchmarks
-
-### Run Specific Benchmark Method
-
-```bash
-# Run only GET benchmarks
-./mvnw test-compile exec:java \
-  -Dexec.mainClass="com.pavan.milletdb.kvstore.LatencyBenchmark" \
-  -Dexec.classpathScope=test \
-  -Dexec.args="get_.*"
-```
-
-### Adjust JVM Options
-
-```bash
-# Increase heap size for larger benchmarks
-export MAVEN_OPTS="-Xmx4g -Xms4g"
-./mvnw test-compile exec:java ...
-```
-
-### Save Results to File
-
-```bash
-./mvnw test-compile exec:java \
-  -Dexec.mainClass="com.pavan.milletdb.kvstore.LatencyBenchmark" \
-  -Dexec.classpathScope=test \
-  > benchmark-results.txt
-```
-
-## Performance Analysis
-
-### Optimal Configuration
-
-Based on benchmark results:
-
-| Workload Type | Recommended Shards | Reasoning |
-|--------------|-------------------|-----------|
-| Low Concurrency (1-2 threads) | 1-2 shards | Minimal overhead |
-| Medium Concurrency (4-8 threads) | 4-8 shards | Balanced performance |
-| High Concurrency (16+ threads) | 16+ shards | Maximum throughput |
-
-### Latency vs Throughput Trade-off
-
-- **Single Shard**: Best single-threaded latency, poor scaling
-- **Multiple Shards**: Slightly higher base latency, excellent scaling
-- **Sweet Spot**: 8-16 shards for most production workloads
+- On this machine, the server sustained ~`85k` to ~`95k` RPS for this workload.
+- Any "100k RPS" claim should be stated conditionally and backed by repeat runs on the target hardware.

@@ -20,30 +20,9 @@ import java.util.concurrent.TimeUnit;
 @Measurement(iterations = 5, time = 1)
 @Fork(1)
 public class ShardedKVStoreBenchmark {
-    
-    @Param({"1", "2", "4", "8"})
-    private int threads;
-    
-    private ShardedKVStore<Integer, String> singleShard;
-    private ShardedKVStore<Integer, String> multiShard;
-    
+
     private static final int CAPACITY_PER_SHARD = 10000;
     private static final int KEY_RANGE = 1000;
-    
-    @Setup(Level.Trial)
-    public void setup() {
-        // Single shard (1 shard)
-        singleShard = new ShardedKVStore<>(1, CAPACITY_PER_SHARD);
-        
-        // Multi-shard (16 shards)
-        multiShard = new ShardedKVStore<>(16, CAPACITY_PER_SHARD);
-        
-        // Pre-populate both stores
-        for (int i = 0; i < KEY_RANGE / 2; i++) {
-            singleShard.put(i, "value-" + i);
-            multiShard.put(i, "value-" + i);
-        }
-    }
     
     @Benchmark
     @Threads(1)

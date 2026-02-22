@@ -2,7 +2,6 @@ package com.pavan.milletdb.snapshot;
 
 import com.pavan.milletdb.kvstore.ConcurrentKVStore;
 import com.pavan.milletdb.kvstore.ShardedKVStore;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
 import java.io.IOException;
@@ -14,6 +13,7 @@ import java.io.BufferedOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -22,7 +22,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Manages periodic snapshots of ShardedKVStore to disk as JSON.
+ * Manages periodic snapshots of ShardedKVStore to disk in compact binary form.
  * Supports automatic periodic snapshots and manual snapshot/restore operations.
  */
 public class SnapshotManager {
@@ -34,7 +34,6 @@ public class SnapshotManager {
     
     private static final String SNAPSHOT_FILE_PREFIX = "snapshot-";
     private static final String SNAPSHOT_FILE_EXTENSION = ".bin";
-    private static final String LEGACY_SNAPSHOT_FILE_EXTENSION = ".json";
     private static final long DEFAULT_SNAPSHOT_INTERVAL_SECONDS = 30;
     
     /**
@@ -147,13 +146,22 @@ public class SnapshotManager {
         long timestamp = System.currentTimeMillis();
         String filename = SNAPSHOT_FILE_PREFIX + timestamp + SNAPSHOT_FILE_EXTENSION;
         Path snapshotFile = snapshotDirectory.resolve(filename);
-        
+        Path tempFile = snapshotDirectory.resolve(filename + ".tmp");
+
         SnapshotData<K, V> snapshotData = captureSnapshot(store);
         try (ObjectOutputStream out = new ObjectOutputStream(
-            new BufferedOutputStream(Files.newOutputStream(snapshotFile)))) {
+            new BufferedOutputStream(Files.newOutputStream(tempFile)))) {
             out.writeObject(snapshotData);
         }
-        
+
+        try {
+            Files.move(tempFile, snapshotFile,
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException atomicMoveFailure) {
+            Files.move(tempFile, snapshotFile, StandardCopyOption.REPLACE_EXISTING);
+        }
+
         return snapshotFile;
     }
     
@@ -188,23 +196,11 @@ public class SnapshotManager {
         }
 
         SnapshotData<K, V> snapshotData;
-        if (snapshotFile.getFileName().toString().endsWith(LEGACY_SNAPSHOT_FILE_EXTENSION)) {
-            ObjectMapper mapper = new ObjectMapper();
-            snapshotData = mapper.readValue(
-                snapshotFile.toFile(),
-                mapper.getTypeFactory().constructParametricType(
-                    SnapshotData.class,
-                    Object.class,
-                    Object.class
-                )
-            );
-        } else {
-            try (ObjectInputStream in = new ObjectInputStream(
-                new BufferedInputStream(Files.newInputStream(snapshotFile)))) {
-                snapshotData = (SnapshotData<K, V>) in.readObject();
-            } catch (ClassNotFoundException e) {
-                throw new IOException("Failed to deserialize snapshot: " + snapshotFile, e);
-            }
+        try (ObjectInputStream in = new ObjectInputStream(
+            new BufferedInputStream(Files.newInputStream(snapshotFile)))) {
+            snapshotData = (SnapshotData<K, V>) in.readObject();
+        } catch (ClassNotFoundException e) {
+            throw new IOException("Failed to deserialize snapshot: " + snapshotFile, e);
         }
         
         restoreSnapshot(store, snapshotData);
@@ -219,12 +215,7 @@ public class SnapshotManager {
         data.timestamp = System.currentTimeMillis();
         data.numShards = store.getNumShards();
         data.capacityPerShard = store.getCapacityPerShard();
-        data.shards = new HashMap<>();
-        
-        ConcurrentKVStore<K, V>[] shards = store.getShards();
-        for (int i = 0; i < shards.length; i++) {
-            data.shards.put(i, shards[i].getAllEntries());
-        }
+        data.shards = store.captureSnapshot();
         
         return data;
     }
@@ -240,13 +231,7 @@ public class SnapshotManager {
             );
         }
         
-        ConcurrentKVStore<K, V>[] shards = store.getShards();
-        for (int i = 0; i < shards.length; i++) {
-            Map<K, ConcurrentKVStore.SnapshotEntry<V>> shardData = data.shards.get(i);
-            if (shardData != null) {
-                shards[i].restoreFromSnapshot(shardData);
-            }
-        }
+        store.restoreSnapshot(data.shards);
     }
     
     /**
@@ -255,7 +240,7 @@ public class SnapshotManager {
     private File findLatestSnapshot() {
         File[] files = snapshotDirectory.toFile().listFiles(
             (dir, name) -> name.startsWith(SNAPSHOT_FILE_PREFIX) && 
-                          (name.endsWith(SNAPSHOT_FILE_EXTENSION) || name.endsWith(LEGACY_SNAPSHOT_FILE_EXTENSION))
+                          name.endsWith(SNAPSHOT_FILE_EXTENSION)
         );
         
         if (files == null || files.length == 0) {
@@ -285,7 +270,7 @@ public class SnapshotManager {
         
         File[] files = snapshotDirectory.toFile().listFiles(
             (dir, name) -> name.startsWith(SNAPSHOT_FILE_PREFIX) && 
-                          (name.endsWith(SNAPSHOT_FILE_EXTENSION) || name.endsWith(LEGACY_SNAPSHOT_FILE_EXTENSION))
+                          name.endsWith(SNAPSHOT_FILE_EXTENSION)
         );
         
         if (files == null || files.length <= keepCount) {
@@ -308,7 +293,7 @@ public class SnapshotManager {
     }
     
     /**
-     * Data structure for JSON serialization.
+     * Data structure for binary snapshot serialization.
      */
     static class SnapshotData<K, V> implements Serializable {
         private static final long serialVersionUID = 1L;

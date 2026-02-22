@@ -18,11 +18,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Integration tests for NioServer with multiple concurrent clients.
+ * Integration tests for NettyServer with multiple concurrent clients.
  */
-class NioServerIntegrationTest {
+class NettyServerIntegrationTest {
     
-    private NioServer server;
+    private NettyServer server;
     private ShardedKVStore<String, String> store;
     private static final int TEST_PORT = 9998;
     private static final int WORKER_THREADS = 20;
@@ -30,7 +30,7 @@ class NioServerIntegrationTest {
     @BeforeEach
     void setUp() throws IOException {
         store = new ShardedKVStore<>(8, 1000);
-        server = new NioServer(store, TEST_PORT, WORKER_THREADS);
+        server = new NettyServer(store, TEST_PORT, WORKER_THREADS);
         server.start();
         
         // Wait for server to start
@@ -174,7 +174,7 @@ class NioServerIntegrationTest {
         assertEquals(numClients * operationsPerClient, totalOperations.get());
         
         // Verify server stats
-        NioServer.ServerStats stats = server.getStats();
+        NettyServer.ServerStats stats = server.getStats();
         assertTrue(stats.totalCommands >= numClients * operationsPerClient);
     }
     
@@ -459,7 +459,7 @@ class NioServerIntegrationTest {
         // Give server time to process
         Thread.sleep(500);
         
-        NioServer.ServerStats stats = server.getStats();
+        NettyServer.ServerStats stats = server.getStats();
         
         // Verify stats
         assertTrue(stats.totalConnections >= numClients);
@@ -545,3 +545,4 @@ class NioServerIntegrationTest {
         }
     }
 }
+

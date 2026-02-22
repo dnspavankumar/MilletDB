@@ -199,4 +199,23 @@ class RequestHandlerTest {
         
         assertEquals(4, totalCommands.get());
     }
+
+    @Test
+    void testHandleSetWithOversizedKeyOrValue() {
+        ShardedKVStore<String, String> limitedStore = new ShardedKVStore<>(4, 100, 4, 5);
+        RequestHandler limitedHandler = new RequestHandler(
+            limitedStore,
+            new AtomicLong(0),
+            new AtomicLong(0),
+            new AtomicLong(0)
+        );
+
+        Response oversizedKey = limitedHandler.handleCommand("SET abcde v");
+        assertEquals(Response.ResponseType.ERROR, oversizedKey.getType());
+        assertTrue(oversizedKey.getData().contains("Key size exceeds limit"));
+
+        Response oversizedValue = limitedHandler.handleCommand("SET key1 value-too-long");
+        assertEquals(Response.ResponseType.ERROR, oversizedValue.getType());
+        assertTrue(oversizedValue.getData().contains("Value size exceeds limit"));
+    }
 }

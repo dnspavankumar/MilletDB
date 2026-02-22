@@ -43,7 +43,7 @@ class StatsControllerTest {
         Map<String, Object> body = response.getBody();
         assertNotNull(body);
         assertEquals("UP", body.get("status"));
-        assertTrue(body.containsKey("nioServer"));
+        assertTrue(body.containsKey("nettyServer"));
         assertTrue(body.containsKey("storeSize"));
         assertTrue(body.containsKey("timestamp"));
     }

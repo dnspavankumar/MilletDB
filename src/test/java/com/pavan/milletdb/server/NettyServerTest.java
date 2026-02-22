@@ -19,16 +19,16 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class NioServerTest {
+class NettyServerTest {
     
-    private NioServer server;
+    private NettyServer server;
     private ShardedKVStore<String, String> store;
     private static final int TEST_PORT = 9999;
     
     @BeforeEach
     void setUp() throws IOException {
         store = new ShardedKVStore<>(4, 100);
-        server = new NioServer(store, TEST_PORT);
+        server = new NettyServer(store, TEST_PORT);
         server.start();
         
         // Wait for server to start
@@ -266,7 +266,7 @@ class NioServerTest {
         assertTrue(latch.await(30, TimeUnit.SECONDS));
         executor.shutdown();
         
-        NioServer.ServerStats stats = server.getStats();
+        NettyServer.ServerStats stats = server.getStats();
         assertTrue(stats.totalCommands > 0);
         assertTrue(stats.totalConnections >= numThreads);
     }
@@ -291,7 +291,7 @@ class NioServerTest {
             client1.sendCommand("SET key1 value1");
             client2.sendCommand("SET key2 value2");
             
-            NioServer.ServerStats stats = server.getStats();
+            NettyServer.ServerStats stats = server.getStats();
             assertTrue(stats.totalConnections >= 2);
             assertTrue(stats.activeConnections >= 2);
             assertTrue(stats.totalCommands >= 2);
@@ -359,3 +359,4 @@ class NioServerTest {
         }
     }
 }
+
